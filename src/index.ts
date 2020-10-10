@@ -8,24 +8,8 @@ const server = require("http").createServer(async (req, res) => {
   if (req.method === "POST") handlePOST(req, res);
   else handleGET(req, res);
 });
-const file = openSync("./flac.pcm", 'r');
-const l = 44100 * 4;
-const fptr = 0;
-const ob = Buffer.alloc(l);
-readSync(file, ob, 0, l, fptr);
-export const readPCMF32LEMono = (ab) => {
-  const floats = [];
-  const fl = new Float32Array(ab);
-  const abf = [];
-  for (let i = 0; i < ab.byteLength; i += 4) {
-    if (ab[i] & 0x80) {
-      floats.push(((ab[i + 3] | ab[i + 2] << 8 | ab[i + 1] << 16 | ab[i] << 24) - 1) / 0x80000000);
-    } else {
-      floats.push((ab[i + 3] | ab[i + 2] << 8 | ab[i + 1] << 16 | ab[i] << 24) / 0xffffffff);
-    }
-  }
-  return floats;
-};
+
+
 
 async function handleGET(req, res) {
   try {
@@ -60,20 +44,18 @@ async function handleGET(req, res) {
     const transceiver = pc.addTransceiver("audio");
     pc.addTrack(strack);
     const track = transceiver.receiver.track;
-    const auddata = {
-      samples: readPCMF32LEMono(ab)
-      sampleRate: 44100,
-      bitsPerSample: 16,
-      channelCount: 1
-      numberOfFrames:
-    };
+    const file = openSync("./flac.pcm", 'r');
+    const l = 44100 * 4;
+    let fptr = 0;
+    const ob = Buffer.alloc(l);
     setInterval(() => {
-      const samples = readPCMF32LEMono(ab);
+      const samples = readSync(file, ob, 0, l, fptr += l);
+
       track.ondata({
         samples,
         sampleRate: 44100,
-        bitsPerSample: 16,
-        channelCount: 1,
+        bitsPerSample: 32,
+        channelCount: 2,
         numberOfFrames: samples.length
       });
     }, 1000);
@@ -126,10 +108,11 @@ async function handleGET(req, res) {
 
   const originalAnswer = await bpc.createAnswer();
   await bpc.setLocalDescription(originalAnswer);
-
+    const post  = JSON.stringify({sdp:bpc.localDescription, id:${pc.id}});
   const { gatheredCandidates } = await fetch("http://localhost:3000/${pc.id}", {
     method: "POST",
-    body: JSON.stringify({sdp:bpc.localDescription, id:${pc.id}}),
+    body: post,
+    length: body.length,
     headers: {
       "Content-Type": "application/json",
     },
@@ -151,15 +134,14 @@ async function handleGET(req, res) {
 }
 
 function handlePOST(req, res) {
-  console.log(req);
 
   let d = [];
   req.on("data", (c) => d.push(c));
-  req.on("finish", async () => {
+  req.on("doen", async () => {
     const json = JSON.parse(Buffer.concat(d).toString());
-    console.log(json);
     const pc = connections[connections.length - 1];
     await pc.setRemoteDescription(json.sdp);
+    res.end(JSON.stringify(pc.iceConnectionState))
   });
 }
 

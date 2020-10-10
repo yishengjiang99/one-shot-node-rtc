@@ -3,6 +3,38 @@ const { RTCPeerConnection, RTCSessionDescription } = wrtc;
 const { RTCAudioSink } = wrtc.nonstandard;
 const iceServers = require("./lib/iceServers");
 const connections = [];
+import { openSync, readSync } from "fs";
+type FileDescriptor = number;
+type FilePath = string;
+
+export const readPCMF32LEMono = (ab: ArrayBuffer) => {
+  const floats = [];
+  const fl = new Float32Array(ab);
+  const abf = [];
+  for (let i: number = 0; i < ab.byteLength; i += 4) {
+    floats.push((ab[i + 3] | ab[i + 2] << 8 | ab[i + 1] << 16 | ab[i] << 24) / 0xffffffff);
+  }
+  return floats;
+};
+
+export const readBuffer = (file: FilePath) => {
+  const fd: FileDescriptor = openSync(file, 'r');
+  const l = 44100 * 4;
+  let fptr = 0;
+  const ob = Buffer.alloc(l);
+  return {
+    framesRead: l,
+    read: function () {
+      readSync(fd, ob, 0, l, fptr += l);
+      return readPCMF32LEMono(ob);
+    },
+    getBytes: function () {
+      readSync(fd, ob, 0, l, fptr += l)
+      return new Int32Array(ob);
+    },
+  }
+}
+
 
 const server = require("http").createServer(async (req, res) => {
   if (req.method === "POST") handlePOST(req, res);
@@ -57,14 +89,14 @@ async function handleGET(req, res) {
           <script async>
 (async function main(){
   const remotePeerConnection = ${JSON.stringify({
-    id: pc.id,
-    localDescription: pc.localDescription,
-    candidates: gatheredCans,
-  })};
+      id: pc.id,
+      localDescription: pc.localDescription,
+      candidates: gatheredCans,
+    })};
   const config = ${JSON.stringify({
-    sdpSemantics: "unified-plan",
-    RTCIceServers: iceServers,
-  })};
+      sdpSemantics: "unified-plan",
+      RTCIceServers: iceServers,
+    })};
   const localVideo = document.querySelector("#local");
   const remoteVideo = document.querySelector("#remote");
   const bpc = new RTCPeerConnection(config);
@@ -119,9 +151,9 @@ function handlePOST(req, res) {
   req.on("data", (c) => d.push(c));
   req.on("end", async () => {
     const json = JSON.parse(Buffer.concat(d).toString());
-    console.log(json);
     const pc = connections[connections.length - 1];
     await pc.setRemoteDescription(json.sdp);
+    res.end(JSON.stringify(pc));
   });
 }
 
