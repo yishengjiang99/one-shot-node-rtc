@@ -1,27 +1,28 @@
 const wrtc = require("wrtc");
-const { RTCPeerConnection, RTCSessionDescription } = wrtc;
-const { RTCAudioSink, RTCAudioSource } = wrtc.nonstandard;
-const iceServers = require("./lib/iceServers");
-const connections = [];
-import { openSync, readSync } from 'fs';
-const server = require("http").createServer(async (req, res) => {
+const { RTCPeerConnection } = wrtc;
+const { RTCAudioSource } = wrtc.nonstandard;
+const { IceServers } = require("./IceServers");
+const connections: Record<string, RTCPeerConnection> = {};
+import { IncomingMessage, ServerResponse, createServer } from 'http';
+const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   if (req.method === "POST") handlePOST(req, res);
-  else handleGET(req, res);
+  else handleGET(res).then
 });
 
 
 
-async function handleGET(req, res) {
+async function handleGET(res: ServerResponse) {
   try {
-    const pc = new RTCPeerConnection({
+    const pc: RTCPeerConnection = new RTCPeerConnection({
       sdpSemantics: "unified-plan",
-      RTCIceServers: iceServers,
+      RTCIceServers: IceServers,
     });
-    connections.push(pc);
-    pc.id = connections.length;
+    const id = require('uuidv1')();
 
-    const gatheredCans = [];
-    const iceCanGatherDone = new Promise((resolve) => {
+    connections[id] = pc;
+
+    const gatheredCans: RTCIceCandidate[] = [];
+    const iceCanGatherDone = new Promise<void>((resolve) => {
       pc.addEventListener("icecandidate", ({ candidate }) => {
         if (!candidate) resolve();
         else gatheredCans.push(candidate);
@@ -41,31 +42,48 @@ async function handleGET(req, res) {
     });
     const source = new RTCAudioSource();
     const strack = source.createTrack();
-    const transceiver = pc.addTransceiver("audio");
-    pc.addTrack(strack);
-    const track = transceiver.receiver.track;
-    const file = openSync("./flac.pcm", 'r');
-    const l = 44100 * 4;
-    let fptr = 0;
-    const ob = Buffer.alloc(l);
-    setInterval(() => {
-      const samples = readSync(file, ob, 0, l, fptr += l);
 
-      track.ondata({
-        samples,
-        sampleRate: 44100,
-        bitsPerSample: 32,
-        channelCount: 2,
-        numberOfFrames: samples.length
-      });
-    }, 1000);
-    const sink = new RTCAudioSink(track);
-    const dataChannel = pc.createDataChannel("frequency");
-    const writable = require("fs").createWriteStream("soundin");
-    sink.ondata = (data) => {
-      console.log(data.samples.length);
-      writable.write(Buffer.from(data.samples));
-    };
+    pc.addTrack(strack);
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "connected") {
+        const sampleRate = 44100;
+        const numberOfFrames = sampleRate / 100;
+        const secondsPerSample = 1 / sampleRate;
+        const channelCount = 2;
+        const samples = new Int16Array(channelCount * numberOfFrames);
+        const bitsPerSample = 16;
+        const data = {
+          samples,
+          sampleRate,
+          bitsPerSample,
+          channelCount,
+          numberOfFrames
+        };
+        let time = 0;
+        const maxv = Math.pow(2, bitsPerSample) / 2 - 1;
+        let a = [0.2, 0.5];
+        function next() {
+          for (let i = 0; i < numberOfFrames; i++, time += secondsPerSample) {
+            for (let j = 0; j < channelCount; j++) {
+              samples[i * channelCount + j] = a[j] * Math.sin(3.1 * 333 * time) * maxv;
+            }
+          }
+          console.log(data.samples.subarray(0, 10))
+          source.onData(data);
+          // eslint-disable-next-line
+          setTimeout(next, 10);
+        }
+        setTimeout(next);
+      }
+    }
+    // const transceiver = pc.addTransceiver("audio");
+
+    // const track = transceiver.receiver.track;
+    // const sink = new RTCAudioSink(track);
+    // const writable = require("fs").createWriteStream("soundin");
+    // sink.ondata = (data: ) => {
+    //   writable.write(data);
+    // };
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     await iceCanGatherDone;
@@ -77,13 +95,13 @@ async function handleGET(req, res) {
           <script async>
 (async function main(){
   const remotePeerConnection = ${JSON.stringify({
-      id: pc.id,
+      id: id,
       localDescription: pc.localDescription,
       candidates: gatheredCans,
     })};
   const config = ${JSON.stringify({
       sdpSemantics: "unified-plan",
-      RTCIceServers: iceServers,
+      RTCIceServers: IceServers,
     })};
   const localVideo = document.querySelector("#local");
   const remoteVideo = document.querySelector("#remote");
@@ -108,13 +126,13 @@ async function handleGET(req, res) {
 
   const originalAnswer = await bpc.createAnswer();
   await bpc.setLocalDescription(originalAnswer);
-    const post  = JSON.stringify({sdp:bpc.localDescription, id:${pc.id}});
-  const { gatheredCandidates } = await fetch("http://localhost:3000/${pc.id}", {
+   const post  = JSON.stringify({sdp:bpc.localDescription, id:'${id}'});
+  const { gatheredCandidates } = await fetch("http://localhost:3000/${id}", {
     method: "POST",
     body: post,
-    length: body.length,
     headers: {
       "Content-Type": "application/json",
+      "Content-Length": post.length
     },
   }).then((res) => res.json());
 
@@ -133,16 +151,22 @@ async function handleGET(req, res) {
   }
 }
 
-function handlePOST(req, res) {
+const handlePOST = (req: IncomingMessage, res: ServerResponse) => {
+  let d = ""
+  const length = parseInt(req.headers['content-length'] || "0");
+  req.on("data", (c: any) => {
+    d += c.toString();
+    console.log(d.length);
+    if (d.length >= length) {
+      const json = JSON.parse(d);
+      const pc = connections[json.id];
+      pc.setRemoteDescription(json.sdp).then(() => {
+        res.end(JSON.stringify(pc.iceConnectionState))
 
-  let d = [];
-  req.on("data", (c) => d.push(c));
-  req.on("doen", async () => {
-    const json = JSON.parse(Buffer.concat(d).toString());
-    const pc = connections[connections.length - 1];
-    await pc.setRemoteDescription(json.sdp);
-    res.end(JSON.stringify(pc.iceConnectionState))
+      });
+    }
   });
+
 }
 
 server.listen(3000);
